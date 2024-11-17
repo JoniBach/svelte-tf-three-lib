@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import { EventManager } from './event.js';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls';
 
 /**
  * @typedef {Object} Dimensions
@@ -90,32 +92,137 @@ function handleResize(renderer, camera) {
 }
 
 /**
- * Assembles the 3D scene components and returns them.
+ * Creates XYZ world guides (lines) at the origin.
+ * @param {Object} params - Configuration parameters for the guides.
+ * @param {number} [params.length=10] - Length of the guides.
+ * @returns {THREE.Group} - A group containing the XYZ guides.
+ */
+function createWorldGuides({ length = 10 } = {}) {
+	const guides = new THREE.Group();
+
+	// X-axis (Red)
+	const xMaterial = new THREE.LineBasicMaterial({ color: 0xff0000 });
+	const xGeometry = new THREE.BufferGeometry().setFromPoints([
+		new THREE.Vector3(0, 0, 0),
+		new THREE.Vector3(length, 0, 0)
+	]);
+	const xLine = new THREE.Line(xGeometry, xMaterial);
+
+	// Y-axis (Green)
+	const yMaterial = new THREE.LineBasicMaterial({ color: 0x00ff00 });
+	const yGeometry = new THREE.BufferGeometry().setFromPoints([
+		new THREE.Vector3(0, 0, 0),
+		new THREE.Vector3(0, length, 0)
+	]);
+	const yLine = new THREE.Line(yGeometry, yMaterial);
+
+	// Z-axis (Blue)
+	const zMaterial = new THREE.LineBasicMaterial({ color: 0x0000ff });
+	const zGeometry = new THREE.BufferGeometry().setFromPoints([
+		new THREE.Vector3(0, 0, 0),
+		new THREE.Vector3(0, 0, length)
+	]);
+	const zLine = new THREE.Line(zGeometry, zMaterial);
+
+	// Add lines to the group
+	guides.add(xLine, yLine, zLine);
+
+	return guides;
+}
+
+/**
+ * Creates a Three.js scene with optional OrbitControls.
  * @param {HTMLCanvasElement} canvas - The canvas element.
  * @param {Object} params - Configuration parameters.
  * @param {Dimensions} params.dimensions - Renderer dimensions.
  * @param {Options} [params.options={}] - Additional options.
+ * @param {boolean} [params.options.enableOrbitControls=false] - Enable OrbitControls.
+ * @param {Object} [params.options.orbitControlsConfig={}] - Configuration for OrbitControls.
  * @returns {Object} - The assembled 3D scene components.
  */
 export function create3DScene({ canvas, dimensions, options = {} }) {
 	const { width, height } = dimensions;
-	if (!width || !height) {
-		throw new Error('Dimensions must include both width and height.');
-	}
+	const {
+		backgroundColor = 0x202020,
+		cameraPosition = { x: 0, y: 5, z: 10 },
+		enableWorldGuides = false,
+		worldGuidesConfig = { length: 10 },
+		enableOrbitControls = false,
+		orbitControlsConfig = {}
+	} = options;
 
-	const { backgroundColor = 0x202020, cameraPosition = { x: 0, y: 5, z: 10 } } = options;
-
+	// Core components
 	const scene = createScene(backgroundColor);
 	const camera = createCamera({ aspectRatio: width / height, position: cameraPosition });
 	const renderer = createRenderer(canvas, { width, height });
 	addDefaultLighting(scene);
 
-	// Handle window resizing
+	// Handle resizing
 	handleResize(renderer, camera);
 
 	// Maintain a registry of update functions
 	const updateFunctions = [];
 
+	// Initialize the event manager
+	const eventManager = new EventManager(scene, camera, renderer);
+
+	// Add world guides if enabled
+	if (enableWorldGuides) {
+		const worldGuides = createWorldGuides(worldGuidesConfig);
+		scene.add(worldGuides);
+	}
+
+	// OrbitControls (optional)
+	let orbitControls = null;
+	if (enableOrbitControls) {
+		orbitControls = new OrbitControls(camera, renderer.domElement);
+
+		// Apply user-defined configuration
+		Object.entries(orbitControlsConfig).forEach(([key, value]) => {
+			if (key in orbitControls) orbitControls[key] = value;
+		});
+
+		// Add OrbitControls update to the animation loop
+		updateFunctions.push(() => orbitControls.update());
+	}
+
+	// Hook into the EventManager to manage OrbitControls state
+	if (orbitControls) {
+		eventManager.addGlobalDragHandlers({
+			onDragStart: () => (orbitControls.enabled = false),
+			onDragEnd: () => (orbitControls.enabled = true)
+		});
+	}
+
+	// Drag handling logic
+	function makeDraggable(object) {
+		eventManager.addObject(object, {
+			onDrag: (event) => {
+				const dragPlaneNormal = new THREE.Vector3(0, 1, 0); // X-Z plane normal
+				const dragPlane = new THREE.Plane(dragPlaneNormal, 0);
+				const intersectPoint = new THREE.Vector3();
+
+				// Raycast to the drag plane
+				eventManager.raycaster.setFromCamera(eventManager.pointer, camera);
+				eventManager.raycaster.ray.intersectPlane(dragPlane, intersectPoint);
+
+				// Calculate world movement based on pointer deltas
+				const movement = new THREE.Vector3(
+					event.movementX * 0.01,
+					0, // Restrict to the X-Z plane
+					-event.movementY * 0.01
+				);
+
+				// Adjust for camera orientation
+				const worldMovement = movement.applyQuaternion(camera.quaternion);
+
+				// Apply movement to the object's position
+				object.position.add(worldMovement);
+			}
+		});
+	}
+
+	// Animation loop
 	function animate() {
 		requestAnimationFrame(animate);
 		updateFunctions.forEach((fn) => fn());
@@ -124,12 +231,16 @@ export function create3DScene({ canvas, dimensions, options = {} }) {
 
 	animate();
 
+	// Exposed API
 	return {
 		scene,
 		camera,
 		renderer,
+		eventManager, // Expose the event manager
+		orbitControls, // Expose OrbitControls for advanced usage
 		addObject: (object) => scene.add(object),
 		removeObject: (object) => scene.remove(object),
+		makeDraggable, // Expose makeDraggable for external usage
 		addUpdate: (fn) => updateFunctions.push(fn),
 		removeUpdate: (fn) => {
 			const index = updateFunctions.indexOf(fn);
