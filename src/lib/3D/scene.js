@@ -75,6 +75,21 @@ function addDefaultLighting(scene) {
 }
 
 /**
+ * Handles resizing the renderer and updating the camera's aspect ratio.
+ * @param {THREE.WebGLRenderer} renderer - The renderer to resize.
+ * @param {THREE.PerspectiveCamera} camera - The camera to update.
+ */
+function handleResize(renderer, camera) {
+	window.addEventListener('resize', () => {
+		const width = window.innerWidth;
+		const height = window.innerHeight;
+		renderer.setSize(width, height);
+		camera.aspect = width / height;
+		camera.updateProjectionMatrix();
+	});
+}
+
+/**
  * Assembles the 3D scene components and returns them.
  * @param {HTMLCanvasElement} canvas - The canvas element.
  * @param {Object} params - Configuration parameters.
@@ -83,36 +98,48 @@ function addDefaultLighting(scene) {
  * @returns {Object} - The assembled 3D scene components.
  */
 export function create3DScene({ canvas, dimensions, options = {} }) {
-	// Validate dimensions
 	const { width, height } = dimensions;
 	if (!width || !height) {
 		throw new Error('Dimensions must include both width and height.');
 	}
 
-	// Destructure options with defaults
 	const { backgroundColor = 0x202020, cameraPosition = { x: 0, y: 5, z: 10 } } = options;
 
-	// Create components using pure functions
 	const scene = createScene(backgroundColor);
 	const camera = createCamera({ aspectRatio: width / height, position: cameraPosition });
 	const renderer = createRenderer(canvas, { width, height });
-
-	// Add default lighting
 	addDefaultLighting(scene);
 
-	// Return the assembled components
+	// Handle window resizing
+	handleResize(renderer, camera);
+
+	// Maintain a registry of update functions
+	const updateFunctions = [];
+
+	function animate() {
+		requestAnimationFrame(animate);
+		updateFunctions.forEach((fn) => fn());
+		renderer.render(scene, camera);
+	}
+
+	animate();
+
 	return {
 		scene,
 		camera,
 		renderer,
 		addObject: (object) => scene.add(object),
 		removeObject: (object) => scene.remove(object),
+		addUpdate: (fn) => updateFunctions.push(fn),
+		removeUpdate: (fn) => {
+			const index = updateFunctions.indexOf(fn);
+			if (index > -1) updateFunctions.splice(index, 1);
+		},
 		resize: (newDimensions) => {
 			const { width, height } = newDimensions;
 			camera.aspect = width / height;
 			camera.updateProjectionMatrix();
 			renderer.setSize(width, height);
-		},
-		render: () => renderer.render(scene, camera)
+		}
 	};
 }
