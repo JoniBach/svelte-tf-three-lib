@@ -1,13 +1,13 @@
 <script>
 	import { onMount } from 'svelte';
-	import { create3DScene } from '$lib';
-	import { createEntityRegistry, registerEntity, spawnEntity } from '$lib';
+	import { createEntityRegistry, registerEntity, spawnEntity, create3DScene } from '$lib';
 	import * as THREE from 'three';
 
 	let canvas; // Canvas element
 	let sceneManager; // Scene manager instance
 	let registry; // Entity registry
 	let balls = []; // Reactive array to track all balls
+	let draggingBall = null; // Tracks the ball currently being dragged
 
 	onMount(() => {
 		// Initialize the 3D scene
@@ -47,25 +47,39 @@
 
 				// Set its position
 				ball.position.set(position.x, position.y, position.z);
+				ball.userData.radius = radius; // Store radius for collision logic
 
 				return ball;
 			}
 		});
 	});
 
-	/**
-	 * Adds a ball to the scene with random properties and makes it draggable.
-	 */
-	function addBall() {
-		const radius = Math.random() * 0.5 + 0.2; // Random radius between 0.2 and 0.7
-		const color = Math.random() * 0xffffff; // Random color
-		const position = {
-			x: (Math.random() - 0.5) * 10,
-			y: 0, // Floor plane
-			z: (Math.random() - 0.5) * 10
-		};
+	function isOverlapping(newPosition, newRadius) {
+		for (const ball of balls) {
+			const distance = new THREE.Vector3().subVectors(ball.position, newPosition).length();
+			const combinedRadius = ball.userData.radius + newRadius;
+			if (distance < combinedRadius) {
+				return true; // Overlapping detected
+			}
+		}
+		return false; // No overlap
+	}
 
-		// Spawn the ball entity
+	function addBall() {
+		const radius = Math.random() * 0.5 + 0.2; // Random radius
+		let position;
+
+		// Retry until a non-overlapping position is found
+		do {
+			position = {
+				x: (Math.random() - 0.5) * 10,
+				y: 0,
+				z: (Math.random() - 0.5) * 10
+			};
+		} while (isOverlapping(new THREE.Vector3(position.x, position.y, position.z), radius));
+
+		const color = Math.random() * 0xffffff; // Random color
+
 		const ball = spawnEntity({
 			scene: sceneManager.scene,
 			registry,
@@ -73,25 +87,75 @@
 			params: { radius, color, position }
 		});
 
-		// Enable dragging for the ball
-		sceneManager.eventManager.enableDragging(ball, (newPosition) => {
-			// Constrain dragging to a horizontal plane
-			newPosition.y = 0;
+		sceneManager.eventManager.addObject(ball, {
+			handlers: {
+				onDragStart: () => {
+					console.log('Drag started!');
+					draggingBall = ball; // Track the ball being dragged
+				},
+				onDrag: () => console.log('Dragging...'),
+				onDragEnd: () => {
+					console.log('Drag ended!');
+					draggingBall = null; // Clear the dragging reference
+				},
+				onClick: () => console.log('Ball clicked!')
+			},
+			collisionOptions: {
+				onCollide: (other) => {
+					// Ignore collision if this ball is being dragged
+					if (draggingBall === ball) return;
+
+					console.log('Collision detected! Removing collided object.');
+
+					// Ensure the other object is removed from the scene
+					if (sceneManager?.scene) {
+						sceneManager.scene.remove(other);
+					}
+
+					// Remove the other object from the event manager
+					sceneManager?.eventManager?.removeObject(other);
+
+					// Dispose of geometry and material to free memory
+					if (other.geometry) other.geometry.dispose();
+					if (other.material) other.material.dispose();
+
+					// Remove the other object from the balls array
+					balls = balls.filter((b) => b !== other);
+
+					// Log for debugging
+					console.log('Collided object removed:', other);
+				}
+			},
+			constraintCallback: (newPosition) => {
+				newPosition.y = 0; // Restrict movement to horizontal plane
+			}
 		});
 
-		// Add to the list of balls
+		// Reassign the array with a new reference to trigger reactivity
 		balls = [...balls, ball];
 	}
 
-	/**
-	 * Removes the most recently added ball from the scene.
-	 */
 	function removeBall() {
 		if (balls.length > 0) {
-			const ball = balls[balls.length - 1]; // Get the last ball
-			sceneManager.removeObject(ball); // Remove it from the scene
-			sceneManager.eventManager.removeObject(ball); // Remove it from event manager
-			balls = balls.slice(0, -1); // Update the reactive array
+			// Remove the last ball from the array
+			const ball = balls.pop();
+
+			// Ensure the ball is removed from the scene
+			if (sceneManager?.scene) {
+				sceneManager.scene.remove(ball);
+			}
+
+			// Remove the ball from the event manager, if applicable
+			sceneManager?.eventManager?.removeObject(ball);
+
+			// Dispose of geometry and material to free memory
+			if (ball.geometry) ball.geometry.dispose();
+			if (ball.material) ball.material.dispose();
+
+			// Optional: Log removal for debugging
+			console.log('Ball removed successfully:', ball);
+		} else {
+			console.warn('No balls left to remove.');
 		}
 	}
 </script>

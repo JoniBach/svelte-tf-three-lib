@@ -1,15 +1,120 @@
 import * as THREE from 'three';
+import { CollisionManager } from './collision.js';
 
 /**
- * Handles pointer movement and calls the appropriate hover or drag handlers.
- * @param {THREE.Vector2} pointer - Normalized pointer position.
- * @param {THREE.Raycaster} raycaster - Raycaster instance.
- * @param {THREE.Camera} camera - Camera used for raycasting.
- * @param {Map<THREE.Object3D, Object>} objectHandlers - Map of objects to their handlers.
- * @param {THREE.Object3D|null} dragging - The currently dragged object.
- * @param {PointerEvent} event - The pointer event.
+ * Creates an EventManager instance that consolidates collision handling, dragging,
+ * and custom event handlers into a single `addObject` call.
  */
-export function handlePointerMove(pointer, raycaster, camera, objectHandlers, dragging, event) {
+export function createEventManager({ scene, camera, renderer, orbitControls = null }) {
+	const raycaster = new THREE.Raycaster();
+	const pointer = new THREE.Vector2();
+	const objectHandlers = new Map();
+	const collisionManager = new CollisionManager();
+	let dragging = null;
+
+	/**
+	 * Add an object to the EventManager with integrated collision, dragging, and handlers.
+	 * Automatically checks for overlaps using the collision system before adding.
+	 *
+	 * @param {THREE.Object3D} object - The object to manage.
+	 * @param {Object} options - Options for the object.
+	 * @param {Object} [options.handlers={}] - Event handlers (onDragStart, onDrag, onDragEnd, onClick).
+	 * @param {Object} [options.collisionOptions={}] - Collision options (onCollide).
+	 * @param {Function} [options.constraintCallback] - Optional callback to constrain object position during dragging.
+	 */
+	function addObject(object, { handlers = {}, collisionOptions = {}, constraintCallback } = {}) {
+		// Ensure object does not overlap with existing objects
+		if (collisionManager.isOverlapping(object)) {
+			console.warn('Attempted to add an overlapping object:', object);
+			return;
+		}
+
+		// Add to collision manager if collision options exist
+		collisionManager.addObject(object, collisionOptions);
+
+		// Add handlers for dragging or other events
+		objectHandlers.set(object, {
+			onDragStart: () => {
+				if (orbitControls) orbitControls.enabled = false;
+				if (handlers.onDragStart) handlers.onDragStart();
+			},
+			onDrag: (event) => {
+				const dragPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0); // XZ plane
+				const intersectPoint = new THREE.Vector3();
+				raycaster.setFromCamera(pointer, camera);
+				raycaster.ray.intersectPlane(dragPlane, intersectPoint);
+
+				if (constraintCallback) {
+					constraintCallback(intersectPoint);
+				}
+
+				object.position.copy(intersectPoint);
+				if (handlers.onDrag) handlers.onDrag(event);
+			},
+			onDragEnd: () => {
+				if (orbitControls) orbitControls.enabled = true;
+				if (handlers.onDragEnd) handlers.onDragEnd();
+			},
+			onClick: handlers.onClick
+		});
+	}
+
+	/**
+	 * Remove an object from the EventManager.
+	 * @param {THREE.Object3D} object - The object to remove.
+	 */
+	function removeObject(object) {
+		objectHandlers.delete(object);
+		collisionManager.removeObject(object);
+	}
+
+	/**
+	 * Update the collision system to check for interactions.
+	 */
+	function updateCollisions() {
+		collisionManager.checkCollisions();
+	}
+
+	// Attach pointer event listeners
+	renderer.domElement.addEventListener('pointermove', (event) =>
+		handlePointerMove({ pointer, raycaster, camera, objectHandlers, dragging, event })
+	);
+	renderer.domElement.addEventListener('pointerdown', (event) => {
+		dragging = handlePointerDown({ pointer, raycaster, camera, objectHandlers, event });
+	});
+	renderer.domElement.addEventListener('pointerup', () => {
+		handlePointerUp({ dragging, objectHandlers });
+		dragging = null;
+	});
+
+	/**
+	 * Exposes isOverlapping to check potential overlaps.
+	 * @param {THREE.Object3D} newObject - The object to check for overlap.
+	 * @returns {boolean} - True if overlapping, false otherwise.
+	 */
+	function isOverlapping(newObject) {
+		return collisionManager.isOverlapping(newObject);
+	}
+
+	return {
+		addObject,
+		removeObject,
+		updateCollisions,
+		isOverlapping
+	};
+}
+
+/**
+ * Handles pointer movement.
+ * @param {Object} options - Options for pointer movement.
+ * @param {THREE.Vector2} options.pointer - Pointer vector.
+ * @param {THREE.Raycaster} options.raycaster - Raycaster instance.
+ * @param {THREE.Camera} options.camera - Camera used for raycasting.
+ * @param {Map} options.objectHandlers - Handlers for objects in the scene.
+ * @param {THREE.Object3D|null} options.dragging - Currently dragged object, if any.
+ * @param {PointerEvent} options.event - Pointer move event.
+ */
+function handlePointerMove({ pointer, raycaster, camera, objectHandlers, dragging, event }) {
 	pointer.x = (event.clientX / window.innerWidth) * 2 - 1;
 	pointer.y = -(event.clientY / window.innerHeight) * 2 + 1;
 
@@ -33,15 +138,16 @@ export function handlePointerMove(pointer, raycaster, camera, objectHandlers, dr
 }
 
 /**
- * Handles pointer down events (clicks) and starts dragging if applicable.
- * @param {THREE.Vector2} pointer - Normalized pointer position.
- * @param {THREE.Raycaster} raycaster - Raycaster instance.
- * @param {THREE.Camera} camera - Camera used for raycasting.
- * @param {Map<THREE.Object3D, Object>} objectHandlers - Map of objects to their handlers.
- * @param {PointerEvent} event - The pointer event.
- * @returns {THREE.Object3D|null} - The object being dragged, or null if none.
+ * Handles pointer down events.
+ * @param {Object} options - Options for pointer down.
+ * @param {THREE.Vector2} options.pointer - Pointer vector.
+ * @param {THREE.Raycaster} options.raycaster - Raycaster instance.
+ * @param {THREE.Camera} options.camera - Camera used for raycasting.
+ * @param {Map} options.objectHandlers - Handlers for objects in the scene.
+ * @param {PointerEvent} options.event - Pointer down event.
+ * @returns {THREE.Object3D|null} - Dragged object or null.
  */
-export function handlePointerDown(pointer, raycaster, camera, objectHandlers, event) {
+function handlePointerDown({ pointer, raycaster, camera, objectHandlers, event }) {
 	pointer.x = (event.clientX / window.innerWidth) * 2 - 1;
 	pointer.y = -(event.clientY / window.innerHeight) * 2 + 1;
 
@@ -66,165 +172,16 @@ export function handlePointerDown(pointer, raycaster, camera, objectHandlers, ev
 }
 
 /**
- * Handles pointer up events and ends dragging.
- * @param {THREE.Object3D|null} dragging - The currently dragged object.
- * @param {Map<THREE.Object3D, Object>} objectHandlers - Map of objects to their handlers.
- * @param {Object} globalHandlers - Global drag event handlers.
+ * Handles pointer up events.
+ * @param {Object} options - Options for pointer up.
+ * @param {THREE.Object3D|null} options.dragging - Currently dragged object, if any.
+ * @param {Map} options.objectHandlers - Handlers for objects in the scene.
  */
-export function handlePointerUp(dragging, objectHandlers, globalHandlers) {
+function handlePointerUp({ dragging, objectHandlers }) {
 	if (dragging) {
 		const handlers = objectHandlers.get(dragging);
 		if (handlers?.onDragEnd) {
 			handlers.onDragEnd(dragging);
 		}
-
-		// Call global onDragEnd handler if defined
-		if (globalHandlers?.onDragEnd) {
-			globalHandlers.onDragEnd();
-		}
-	}
-}
-
-/**
- * EventManager class to handle object interaction and global drag events.
- */
-export class EventManager {
-	constructor(scene, camera, renderer) {
-		this.scene = scene;
-		this.camera = camera;
-		this.renderer = renderer;
-		this.raycaster = new THREE.Raycaster();
-		this.pointer = new THREE.Vector2();
-		this.objectHandlers = new Map();
-		this.dragging = null;
-
-		// Drag state
-		this.dragPlane = new THREE.Plane();
-		this.intersectPoint = new THREE.Vector3();
-
-		// Global drag handlers
-		this.globalHandlers = {
-			onDragStart: null,
-			onDragEnd: null
-		};
-
-		// Bind global event listeners
-		this.renderer.domElement.addEventListener('pointermove', this.onPointerMove.bind(this));
-		this.renderer.domElement.addEventListener('pointerdown', this.onPointerDown.bind(this));
-		this.renderer.domElement.addEventListener('pointerup', this.onPointerUp.bind(this));
-	}
-
-	addObject(object, handlers = {}) {
-		this.objectHandlers.set(object, handlers);
-	}
-
-	removeObject(object) {
-		this.objectHandlers.delete(object);
-	}
-
-	/**
-	 * Enable dragging for an object with optional constraints.
-	 * @param {THREE.Object3D} object - The object to enable dragging for.
-	 * @param {Function} [constraintCallback] - Optional function to constrain the object's position.
-	 */
-	enableDragging(object, constraintCallback) {
-		this.addObject(object, {
-			onDragStart: () => {
-				// Setup drag plane based on the object's current position
-				const dragPlaneNormal = new THREE.Vector3(0, 1, 0); // Horizontal plane normal
-				this.dragPlane.setFromNormalAndCoplanarPoint(dragPlaneNormal, object.position);
-
-				// Store initial offset between the ray and the object
-				this.raycaster.setFromCamera(this.pointer, this.camera);
-				this.raycaster.ray.intersectPlane(this.dragPlane, this.intersectPoint);
-				this.dragOffset = new THREE.Vector3().subVectors(object.position, this.intersectPoint);
-			},
-			onDrag: () => {
-				// Update the raycaster and calculate intersection with the drag plane
-				this.raycaster.setFromCamera(this.pointer, this.camera);
-				this.raycaster.ray.intersectPlane(this.dragPlane, this.intersectPoint);
-
-				// Adjust the object's position by the stored offset
-				this.intersectPoint.add(this.dragOffset);
-
-				// Apply constraints if a callback is provided
-				if (constraintCallback) {
-					constraintCallback(this.intersectPoint);
-				}
-
-				// Update the object's position
-				object.position.copy(this.intersectPoint);
-			},
-			onDragEnd: () => console.log(`Stopped dragging ${object.name || 'object'}`)
-		});
-	}
-
-	/**
-	 * Add global handlers for drag start and end events.
-	 * @param {Object} handlers - Global drag handlers.
-	 * @param {Function} [handlers.onDragStart] - Called when dragging starts.
-	 * @param {Function} [handlers.onDragEnd] - Called when dragging ends.
-	 */
-	addGlobalDragHandlers(handlers) {
-		if (handlers.onDragStart) this.globalHandlers.onDragStart = handlers.onDragStart;
-		if (handlers.onDragEnd) this.globalHandlers.onDragEnd = handlers.onDragEnd;
-	}
-	onPointerMove(event) {
-		this.pointer.x = (event.clientX / window.innerWidth) * 2 - 1;
-		this.pointer.y = -(event.clientY / window.innerHeight) * 2 + 1;
-
-		if (this.dragging) {
-			const handlers = this.objectHandlers.get(this.dragging);
-			if (handlers?.onDrag) {
-				handlers.onDrag(event);
-			}
-			return;
-		}
-
-		const intersects = this.raycaster.intersectObjects([...this.objectHandlers.keys()]);
-		for (const intersect of intersects) {
-			const handlers = this.objectHandlers.get(intersect.object);
-			if (handlers?.onHover) {
-				handlers.onHover(intersect.object);
-			}
-		}
-	}
-
-	onPointerDown(event) {
-		this.pointer.x = (event.clientX / window.innerWidth) * 2 - 1;
-		this.pointer.y = -(event.clientY / window.innerHeight) * 2 + 1;
-
-		this.raycaster.setFromCamera(this.pointer, this.camera);
-		const intersects = this.raycaster.intersectObjects([...this.objectHandlers.keys()]);
-
-		if (intersects.length > 0) {
-			const object = intersects[0].object;
-			const handlers = this.objectHandlers.get(object);
-
-			if (handlers?.onDragStart) {
-				handlers.onDragStart(object);
-				this.dragging = object;
-
-				// Call global onDragStart handler if defined
-				if (this.globalHandlers?.onDragStart) {
-					this.globalHandlers.onDragStart();
-				}
-			}
-		}
-	}
-
-	onPointerUp(event) {
-		if (this.dragging) {
-			const handlers = this.objectHandlers.get(this.dragging);
-			if (handlers?.onDragEnd) {
-				handlers.onDragEnd(this.dragging);
-			}
-
-			// Call global onDragEnd handler if defined
-			if (this.globalHandlers?.onDragEnd) {
-				this.globalHandlers.onDragEnd();
-			}
-		}
-		this.dragging = null; // Clear dragging state
 	}
 }

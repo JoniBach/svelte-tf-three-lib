@@ -132,3 +132,32 @@ export function spawnGroup({ scene, registry, entities }) {
 		spawnEntity({ scene, registry, type, params });
 	});
 }
+
+/**
+ * Removes an entity from the scene and cleans up its registry and event manager.
+ * @param {Object} options - Removal options.
+ * @param {THREE.Scene} options.scene - The Three.js scene from which to remove the entity.
+ * @param {Map} options.registry - The registry containing entity configurations.
+ * @param {THREE.Object3D} options.entity - The entity to remove.
+ * @param {Object} options.eventManager - The event manager to clean up associated handlers.
+ */
+export function removeEntity({ scene, registry, entity, eventManager }) {
+	// Remove from the scene
+	if (scene && scene.children.includes(entity)) {
+		scene.remove(entity);
+	}
+
+	// Remove from the event manager
+	if (eventManager) {
+		eventManager.removeObject(entity);
+	}
+
+	// Clean up registry references if needed
+	if (registry) {
+		// Registry cleanup logic, if applicable
+	}
+
+	// Dispose of geometry and materials to free memory
+	if (entity.geometry) entity.geometry.dispose();
+	if (entity.material) entity.material.dispose();
+}
