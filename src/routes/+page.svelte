@@ -7,7 +7,9 @@
 	let sceneManager; // Scene manager instance
 	let registry; // Entity registry
 	let balls = []; // Reactive array to track all balls
+	let cubes = []; // Reactive array to track all cubes
 	let draggingBall = null; // Tracks the ball currently being dragged
+	let draggingCube = null; // Tracks the cube currently being dragged
 
 	onMount(() => {
 		// Initialize the 3D scene
@@ -52,19 +54,53 @@
 				return ball;
 			}
 		});
+
+		// Register the cube entity
+		registerEntity({
+			registry,
+			type: 'cube',
+			config: (params) => {
+				const { size = 1, color = 0xffffff, position = { x: 0, y: 0, z: 0 } } = params;
+
+				// Create the cube
+				const geometry = new THREE.BoxGeometry(size, size, size);
+				const material = new THREE.MeshStandardMaterial({ color });
+				const cube = new THREE.Mesh(geometry, material);
+
+				// Set its position
+				cube.position.set(position.x, position.y, position.z);
+				cube.userData.size = size; // Store size for collision logic
+				cube.userData.canDrag = true; // Add flag to check if cube can be dragged
+
+				return cube;
+			}
+		});
 	});
 
-	function isOverlapping(newPosition, newRadius) {
-		for (const ball of balls) {
-			const distance = new THREE.Vector3().subVectors(ball.position, newPosition).length();
-			const combinedRadius = ball.userData.radius + newRadius;
-			if (distance < combinedRadius) {
+	// Collision detection
+	function isOverlapping(newPosition, newSize, type) {
+		const objects = type === 'ball' ? balls : cubes;
+
+		for (const object of objects) {
+			let distance;
+			let combinedSize;
+
+			if (type === 'ball' && object.userData.radius) {
+				distance = new THREE.Vector3().subVectors(object.position, newPosition).length();
+				combinedSize = object.userData.radius + newSize;
+			} else if (type === 'cube' && object.userData.size) {
+				distance = new THREE.Vector3().subVectors(object.position, newPosition).length();
+				combinedSize = object.userData.size + newSize;
+			}
+
+			if (distance < combinedSize) {
 				return true; // Overlapping detected
 			}
 		}
 		return false; // No overlap
 	}
 
+	// Function to add a new ball
 	function addBall() {
 		const radius = Math.random() * 0.5 + 0.2; // Random radius
 		let position;
@@ -76,7 +112,7 @@
 				y: 0,
 				z: (Math.random() - 0.5) * 10
 			};
-		} while (isOverlapping(new THREE.Vector3(position.x, position.y, position.z), radius));
+		} while (isOverlapping(new THREE.Vector3(position.x, position.y, position.z), radius, 'ball'));
 
 		const color = Math.random() * 0xffffff; // Random color
 
@@ -90,44 +126,63 @@
 		sceneManager.eventManager.addObject(ball, {
 			handlers: {
 				onDragStart: () => {
-					console.log('Drag started!');
+					console.log('Ball drag started!');
 					draggingBall = ball; // Track the ball being dragged
 				},
-				onDrag: () => console.log('Dragging...'),
+				onDrag: () => console.log('Ball dragging...'),
 				onDragEnd: () => {
-					console.log('Drag ended!');
+					console.log('Ball drag ended!');
 					draggingBall = null; // Clear the dragging reference
 				},
 				onClick: () => console.log('Ball clicked!')
 			},
 			collisionOptions: {
 				onCollide: (other) => {
-					// Ignore collision if this ball is being dragged
-					if (draggingBall === ball) return;
+					if (draggingBall === ball) {
+						// If this ball is being dragged, it should NOT grow upon collision
+						console.log('Dragging ball collided, removing the ball.');
 
-					console.log('Collision detected! Removing collided object.');
+						// Remove the ball from the scene
+						if (sceneManager?.scene) {
+							sceneManager.scene.remove(ball);
+						}
 
-					// Ensure the other object is removed from the scene
-					if (sceneManager?.scene) {
-						sceneManager.scene.remove(other);
+						// Remove the ball from the event manager
+						sceneManager?.eventManager?.removeObject(ball);
+
+						// Dispose of geometry and material to free memory
+						if (ball.geometry) ball.geometry.dispose();
+						if (ball.material) ball.material.dispose();
+
+						// Remove the ball from the balls array
+						balls = balls.filter((b) => b !== ball);
+
+						// Log for debugging
+						console.log('Ball removed successfully due to collision with cube');
+						return; // Prevent other collision logic from executing
 					}
 
-					// Remove the other object from the event manager
-					sceneManager?.eventManager?.removeObject(other);
+					// Handle non-dragging ball collision
+					console.log('Ball collision detected with cube! Removing the ball.');
+
+					// Remove the ball from the scene
+					if (sceneManager?.scene) {
+						sceneManager.scene.remove(ball);
+					}
+
+					// Remove the ball from the event manager
+					sceneManager?.eventManager?.removeObject(ball);
 
 					// Dispose of geometry and material to free memory
-					if (other.geometry) other.geometry.dispose();
-					if (other.material) other.material.dispose();
+					if (ball.geometry) ball.geometry.dispose();
+					if (ball.material) ball.material.dispose();
 
-					// Remove the other object from the balls array
-					balls = balls.filter((b) => b !== other);
+					// Remove the ball from the balls array
+					balls = balls.filter((b) => b !== ball);
 
 					// Log for debugging
-					console.log('Collided object removed:', other);
+					console.log('Ball removed successfully due to collision with cube');
 				}
-			},
-			constraintCallback: (newPosition) => {
-				newPosition.y = 0; // Restrict movement to horizontal plane
 			}
 		});
 
@@ -135,6 +190,68 @@
 		balls = [...balls, ball];
 	}
 
+	// Function to add a new cube
+	function addCube() {
+		const size = Math.random() * 2 + 0.5; // Random size for the cube
+		let position;
+
+		// Retry until a non-overlapping position is found
+		do {
+			position = {
+				x: (Math.random() - 0.5) * 10,
+				y: 0,
+				z: (Math.random() - 0.5) * 10
+			};
+		} while (isOverlapping(new THREE.Vector3(position.x, position.y, position.z), size, 'cube'));
+
+		const color = Math.random() * 0xffffff; // Random color
+
+		const cube = spawnEntity({
+			scene: sceneManager.scene,
+			registry,
+			type: 'cube',
+			params: { size, color, position }
+		});
+
+		sceneManager.eventManager.addObject(cube, {
+			handlers: {
+				onDragStart: () => {
+					if (!cube.userData.canDrag) {
+						console.log('Cube is immovable! Cannot drag.');
+						return; // Prevent dragging if the cube is immovable
+					}
+
+					console.log('Cube drag started!');
+					draggingCube = cube; // Track the cube being dragged
+				},
+				onDrag: () => console.log('Cube dragging...'),
+				onDragEnd: () => {
+					console.log('Cube drag ended!');
+					draggingCube = null; // Clear the dragging reference
+				},
+				onClick: () => console.log('Cube clicked!')
+			},
+			collisionOptions: {
+				onCollide: (other) => {
+					if (other.userData.radius) {
+						// Ball collided with cube, delete the ball and prevent dragging the cube
+						console.log('Cube collision detected with ball! Making cube immovable.');
+
+						// Prevent the cube from being dragged after the collision
+						cube.userData.canDrag = false;
+
+						// Log for debugging
+						console.log('Cube is now immovable.');
+					}
+				}
+			}
+		});
+
+		// Reassign the array with a new reference to trigger reactivity
+		cubes = [...cubes, cube];
+	}
+
+	// Function to remove a ball
 	function removeBall() {
 		if (balls.length > 0) {
 			// Remove the last ball from the array
@@ -158,6 +275,31 @@
 			console.warn('No balls left to remove.');
 		}
 	}
+
+	// Function to remove a cube
+	function removeCube() {
+		if (cubes.length > 0) {
+			// Remove the last cube from the array
+			const cube = cubes.pop();
+
+			// Ensure the cube is removed from the scene
+			if (sceneManager?.scene) {
+				sceneManager.scene.remove(cube);
+			}
+
+			// Remove the cube from the event manager, if applicable
+			sceneManager?.eventManager?.removeObject(cube);
+
+			// Dispose of geometry and material to free memory
+			if (cube.geometry) cube.geometry.dispose();
+			if (cube.material) cube.material.dispose();
+
+			// Optional: Log removal for debugging
+			console.log('Cube removed successfully:', cube);
+		} else {
+			console.warn('No cubes left to remove.');
+		}
+	}
 </script>
 
 <canvas bind:this={canvas}></canvas>
@@ -166,6 +308,8 @@
 <div class="controls">
 	<button on:click={addBall}>Add Ball</button>
 	<button on:click={removeBall} disabled={balls.length === 0}>Remove Ball</button>
+	<button on:click={addCube}>Add Cube</button>
+	<button on:click={removeCube} disabled={cubes.length === 0}>Remove Cube</button>
 </div>
 
 <style>
